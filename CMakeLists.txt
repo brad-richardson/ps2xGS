@@ -45,3 +45,7 @@ target_link_libraries(gsreplay PRIVATE ps2xgs_harness)
 # G0 step 5: synthetic capture generator.
 add_executable(gsgen harness/gsgen.cpp)
 target_link_libraries(gsgen PRIVATE ps2xgs_harness)
+
+# G0 step 6: feature census.
+add_executable(gscensus census/gscensus.cpp)
+target_link_libraries(gscensus PRIVATE ps2xgs_harness)
