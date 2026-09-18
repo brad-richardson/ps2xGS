@@ -49,3 +49,44 @@ target_link_libraries(gsgen PRIVATE ps2xgs_harness)
 # G0 step 6: feature census.
 add_executable(gscensus census/gscensus.cpp)
 target_link_libraries(gscensus PRIVATE ps2xgs_harness)
+
+# G0 step 7: CTest suite.
+enable_testing()
+
+# Captures and anything over 5 MB live outside the repo; the suite
+# (re)generates the synthetic set there. Override with
+# -DPS2XGS_SYNTH_DIR=<dir>.
+set(PS2XGS_SYNTH_DIR "/Volumes/Extreme SSD/ps2xgs/synth" CACHE PATH
+    "Directory for (generated) synthetic captures")
+set(PS2XGS_CENSUS_JSON "${CMAKE_BINARY_DIR}/census.json" CACHE FILEPATH
+    "Census JSON written by the test suite")
+set(PS2XGS_CENSUS_MD "${CMAKE_BINARY_DIR}/census.md" CACHE FILEPATH
+    "Census Markdown written by the test suite")
+
+add_executable(test_gsregs tests/test_gsregs.cpp)
+target_link_libraries(test_gsregs PRIVATE ps2xgs_harness)
+add_test(NAME gsregs-roundtrip COMMAND test_gsregs)
+
+add_executable(test_gscap_roundtrip tests/test_gscap_roundtrip.cpp)
+target_link_libraries(test_gscap_roundtrip PRIVATE ps2xgs_harness)
+add_test(NAME gscap-roundtrip COMMAND test_gscap_roundtrip)
+
+add_test(NAME gen-synth COMMAND gsgen "${PS2XGS_SYNTH_DIR}")
+set_tests_properties(gen-synth PROPERTIES FIXTURES_SETUP synth)
+
+add_test(NAME identity-replay
+    COMMAND sh "${CMAKE_SOURCE_DIR}/tests/replay_all.sh"
+            "${PS2XGS_SYNTH_DIR}" "$<TARGET_FILE:gsreplay>")
+set_tests_properties(identity-replay PROPERTIES FIXTURES_REQUIRED synth)
+
+add_test(NAME run-census
+    COMMAND sh "${CMAKE_SOURCE_DIR}/tests/run_census.sh"
+            "$<TARGET_FILE:gscensus>" "${PS2XGS_SYNTH_DIR}"
+            "${PS2XGS_CENSUS_JSON}" "${PS2XGS_CENSUS_MD}")
+set_tests_properties(run-census PROPERTIES
+    FIXTURES_REQUIRED synth
+    FIXTURES_SETUP census-out)
+
+add_test(NAME census-features
+    COMMAND python3 "${CMAKE_SOURCE_DIR}/tests/check_census.py" "${PS2XGS_CENSUS_JSON}")
+set_tests_properties(census-features PROPERTIES FIXTURES_REQUIRED census-out)

@@ -232,7 +232,7 @@ struct Census
         if (t.zte)
             bump(ztst, kZtstNames[t.ztst]);
         else
-            bump(ztst, "OFF");
+            bump(ztst, std::string(kZtstNames[t.ztst]) + "/zte0");
         bump(zbufPsm, psmName(c.zbuf.psm));
         if (c.zbuf.zmask)
             zmsk++;
@@ -519,7 +519,7 @@ int main(int argc, char **argv)
             writeTable(os, "ATST (ATE on; OFF = ATE disabled)", c.atst);
             writeTable(os, "AFAIL (only failing draws)", c.afail);
             writeTable(os, "DATE/DATM", c.dateDatm);
-            writeTable(os, "ZTST (ZTE on; OFF = ZTE disabled)", c.ztst);
+            writeTable(os, "ZTST (/zte0 = ZTE disabled)", c.ztst);
             writeTable(os, "ZBUF psm", c.zbufPsm);
             os << "ZMSK draws: " << c.zmsk << "\n\n";
             writeTable(os, "FRAME psm", c.framePsm);
