@@ -1,0 +1,22 @@
+# Build output (out of tree; APFS scratch lives at /tmp/ps2xgs-build).
+build/
+build-*/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.ninja
+*.ninja_deps
+*.ninja_log
+
+# Captures live on the SSD (/Volumes/Extreme SSD/ps2xgs/), never in git.
+captures/
+*.gscap
+
+# Generated census/replay outputs.
+census.json
+census.md
+*.replay.json
+
+.DS_Store
