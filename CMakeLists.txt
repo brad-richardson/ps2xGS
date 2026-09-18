@@ -41,3 +41,7 @@ add_executable(gsreplay
     harness/backend_factory.cpp
 )
 target_link_libraries(gsreplay PRIVATE ps2xgs_harness)
+
+# G0 step 5: synthetic capture generator.
+add_executable(gsgen harness/gsgen.cpp)
+target_link_libraries(gsgen PRIVATE ps2xgs_harness)
