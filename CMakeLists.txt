@@ -20,3 +20,15 @@ add_library(ps2xgs_upstream_cpu STATIC
 target_include_directories(ps2xgs_upstream_cpu PUBLIC
     upstream/ps2xRuntime/include
 )
+
+# G0 steps 3-6: capture format + recording backend. Tools (gsreplay,
+# gsgen, gscensus) and tests link this.
+add_library(ps2xgs_harness STATIC
+    harness/gscap.cpp
+    harness/recording_backend.cpp
+)
+target_include_directories(ps2xgs_harness PUBLIC
+    harness
+    upstream/ps2xRuntime/include
+)
+target_link_libraries(ps2xgs_harness PUBLIC ps2xgs_upstream_cpu)
