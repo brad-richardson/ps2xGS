@@ -49,3 +49,12 @@ gscensus <capture...> --json census.json --md census.md
 All three binaries live in the CMake build dir (`/tmp/ps2xgs-build`).
 Captures and anything over 5 MB go under
 `/Volumes/Extreme SSD/ps2xgs/`, never into this repo.
+
+## License
+
+GPL-3.0-or-later. This repository is licensed under the GNU General Public
+License, version 3 (see `LICENSE`), matching upstream
+[PS2Recomp](https://github.com/ran-j/PS2Recomp), whose runtime and headers
+every build here compiles or links against. Choosing the same license
+removes any question about combining the two. Copyright (c) 2026 Brad
+Richardson.
