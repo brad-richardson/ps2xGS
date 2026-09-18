@@ -32,3 +32,12 @@ target_include_directories(ps2xgs_harness PUBLIC
     upstream/ps2xRuntime/include
 )
 target_link_libraries(ps2xgs_harness PUBLIC ps2xgs_upstream_cpu)
+
+# G0 step 4: replay + diff. The backend choice lives in
+# harness/backend_factory.cpp so S1 adds "vulkan" there without
+# touching the replay logic.
+add_executable(gsreplay
+    harness/gsreplay.cpp
+    harness/backend_factory.cpp
+)
+target_link_libraries(gsreplay PRIVATE ps2xgs_harness)
