@@ -91,3 +91,20 @@ set_tests_properties(run-census PROPERTIES
 add_test(NAME census-features
     COMMAND python3 "${CMAKE_SOURCE_DIR}/tests/check_census.py" "${PS2XGS_CENSUS_JSON}")
 set_tests_properties(census-features PROPERTIES FIXTURES_REQUIRED census-out)
+
+# G2 step 5: strict sensitivity (mip diffs), strict specificity
+# (controls exact), cpu identity on new captures.
+add_test(NAME strict-diffs-on-mip
+    COMMAND sh "${CMAKE_SOURCE_DIR}/tests/check_strict_diffs.sh"
+            "${PS2XGS_SYNTH_DIR}" "$<TARGET_FILE:gsreplay>")
+set_tests_properties(strict-diffs-on-mip PROPERTIES FIXTURES_REQUIRED synth)
+
+add_test(NAME strict-exact-on-control
+    COMMAND sh "${CMAKE_SOURCE_DIR}/tests/check_strict_exact.sh"
+            "${PS2XGS_SYNTH_DIR}" "$<TARGET_FILE:gsreplay>")
+set_tests_properties(strict-exact-on-control PROPERTIES FIXTURES_REQUIRED synth)
+
+add_test(NAME cpu-identity-on-new-captures
+    COMMAND sh "${CMAKE_SOURCE_DIR}/tests/check_cpu_new.sh"
+            "${PS2XGS_SYNTH_DIR}" "$<TARGET_FILE:gsreplay>")
+set_tests_properties(cpu-identity-on-new-captures PROPERTIES FIXTURES_REQUIRED synth)

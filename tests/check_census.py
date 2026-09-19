@@ -20,9 +20,9 @@ def has(m, *keys):
     return all(k in d.get(m, {}) for k in keys)
 
 
-check(d.get("files") == 78, "files==78")
-check(d.get("presents") == 78, "presents==78")
-check(d.get("submits") > 0, "submits>0")
+check(d.get("files") == 98, "files==98")
+check(d.get("presents") == 98, "presents==98")
+check(d.get("submits") == 138, "submits==138")
 
 check(has("prim_type", "point", "line", "trilist", "tristrip", "trifan", "sprite"),
       "prim_type all 7")
@@ -35,6 +35,8 @@ check(any("csa1" in k for k in d.get("clut", {})), "clut csa1")
 check(has("clamp", "REPEAT/REPEAT", "CLAMP/CLAMP", "REGION_CLAMP/REGION_CLAMP",
           "REGION_REPEAT/REGION_REPEAT"), "clamp modes")
 check(has("texa", "aem0", "aem1"), "texa aem")
+check(has("tex1", "mmin0/mmag0/mxl0", "mmin1/mmag1/mxl0", "mmin0/mmag0/mxl1",
+          "mmin0/mmag0/mxl2", "mmin1/mmag0/mxl0"), "tex1 mxl>0 + mixed")
 check(len(d.get("alpha", {})) >= 6, "alpha combos>=6")
 check(any("/C2/" in k for k in d.get("alpha", {})), "alpha C=FIX")
 check(has("blend_misc", "pabe", "fba", "colclamp0", "dthe"), "blend misc")
