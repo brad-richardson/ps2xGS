@@ -39,6 +39,7 @@ target_link_libraries(ps2xgs_harness PUBLIC ps2xgs_upstream_cpu)
 add_executable(gsreplay
     harness/gsreplay.cpp
     harness/backend_factory.cpp
+    harness/strict_backend.cpp
 )
 target_link_libraries(gsreplay PRIVATE ps2xgs_harness)
 
