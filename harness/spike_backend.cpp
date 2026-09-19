@@ -474,12 +474,18 @@ namespace
     }
 }
 
+namespace
+{
+void ensureSpikePageC32(); // [G3-RMW] defined above WritePixel
+} // namespace
+
 GSSpikeBackend::GSSpikeBackend()
 {
     using namespace GSMem;
     static std::once_flag lookupTablesOnce;
     std::call_once(lookupTablesOnce, []()
                    { InitLookupTables(); });
+    ensureSpikePageC32(); // [G3-RMW] fork-local C32 page table, once
     for (size_t i = 0; i < kPsmHandlerCount; ++i)
     {
         switch (i)
@@ -793,6 +799,76 @@ void GSSpikeBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
     }
 }
 
+namespace
+{
+
+// [G3-RMW] Single-address read-modify-write for CT32 frame writes.
+// Upstream computes the swizzled VRAM address twice per frmw pixel
+// (ReadVramUnlocked for the blend/fbmsk/alpha read, WriteVramUnlocked
+// for the store). This path computes it once via a fork-local copy of
+// the C32 page table (same literals + same
+// PixelStorageTraits::Address math as upstream ps2_gs_memory.cpp)
+// and reuses the byte pointer for the conditional store. All other
+// PSMs keep the original two-call path.
+using SpikeC32Traits = GSMem::PixelStorageTraits<GSMem::C32>;
+SpikeC32Traits::PageLookupTableT g_spikePageC32{};
+std::once_flag g_spikePageC32Once;
+
+void ensureSpikePageC32()
+{
+    // Called once from the constructor (never per-pixel: call_once
+    // costs a lock on every invocation even after initialization).
+    std::call_once(g_spikePageC32Once, []() {
+        static constexpr SpikeC32Traits::BlockLookupTableT kBlock{{
+            {0, 1, 4, 5, 16, 17, 20, 21},
+            {2, 3, 6, 7, 18, 19, 22, 23},
+            {8, 9, 12, 13, 24, 25, 28, 29},
+            {10, 11, 14, 15, 26, 27, 30, 31},
+        }};
+        static constexpr SpikeC32Traits::ColumnLookupTableT kColumn{{
+            {0, 1, 4, 5, 8, 9, 12, 13},
+            {2, 3, 6, 7, 10, 11, 14, 15},
+            {16, 17, 20, 21, 24, 25, 28, 29},
+            {18, 19, 22, 23, 26, 27, 30, 31},
+            {32, 33, 36, 37, 40, 41, 44, 45},
+            {34, 35, 38, 39, 42, 43, 46, 47},
+            {48, 49, 52, 53, 56, 57, 60, 61},
+            {50, 51, 54, 55, 58, 59, 62, 63},
+        }};
+        SpikeC32Traits::InitPageLookupTable(g_spikePageC32, kBlock, kColumn);
+    });
+}
+
+struct SpikeRmw32
+{
+    uint8_t *ptr = nullptr;
+};
+
+bool spikeRmwBegin(uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint8_t *vram,
+                   SpikeRmw32 &slot, uint32_t &oldValue)
+{
+    if (vram == nullptr)
+        return false;
+    // Table is initialized in the constructor; no per-pixel gate here.
+    // Same address + byte math as PixelStorageTraits<C32>::Read.
+    const uint32_t pixelAddr = SpikeC32Traits::Address(g_spikePageC32, base, bw, x, y);
+    const uint32_t bits = pixelAddr * 32u;
+    const uint32_t byteAddr = (bits / 8u) & (uint32_t)(GSMem::MEMORY_SIZE - sizeof(uint32_t));
+    slot.ptr = &vram[byteAddr];
+    uint32_t v = 0;
+    std::memcpy(&v, slot.ptr, sizeof(v));
+    oldValue = v;
+    return true;
+}
+
+void spikeRmwCommit(const SpikeRmw32 &slot, uint32_t newValue)
+{
+    // Same store as PixelStorageTraits<C32>::Write (plain u32 memcpy).
+    std::memcpy(slot.ptr, &newValue, sizeof(newValue));
+}
+
+} // namespace
+
 void GSSpikeBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog)
 {
     const auto &ctx = state.context;
@@ -835,9 +911,19 @@ void GSSpikeBackend::WritePixel(const GSDrawState &state, int x, int y, int z, u
 
     u32 rawFramebufferPixel = 0;
     u32 fbrgba = 0;
+    SpikeRmw32 rmwSlot{}; // [G3-RMW]
+    bool rmwActive = false; // [G3-RMW]
     if (frmw)
     {
-        rawFramebufferPixel = ReadVramUnlocked(fpsm, fbp, fbw, x, y);
+        // [G3-RMW] CT32 shares one address lookup between the read
+        // and the conditional store below; other PSMs keep the
+        // original two-call path.
+        if (fpsm == GS_PSM_CT32 &&
+            spikeRmwBegin(fbp, fbw, (uint32_t)x, (uint32_t)y, m_vram, rmwSlot,
+                          rawFramebufferPixel))
+            rmwActive = true;
+        else
+            rawFramebufferPixel = ReadVramUnlocked(fpsm, fbp, fbw, x, y);
         fbrgba = rawFramebufferPixel;
 
         if (bitsPerPixel(fpsm) == 16)
@@ -950,7 +1036,10 @@ void GSSpikeBackend::WritePixel(const GSDrawState &state, int x, int y, int z, u
             pixel = Rgba8888ToRgba5551(pixel);
         }
 
-        WriteVramUnlocked(fpsm, fbp, fbw, x, y, pixel);
+        if (rmwActive) // [G3-RMW] store through the shared lookup
+            spikeRmwCommit(rmwSlot, pixel);
+        else
+            WriteVramUnlocked(fpsm, fbp, fbw, x, y, pixel);
     }
 
     if (writeMask.writeDepth && !ctx.zbuf.zmask)
