@@ -1803,6 +1803,53 @@ bool GSSpikeBackend::ClearFramebuffer(const GSContext &context, uint32_t rgba)
     return false;
 }
 
+namespace
+{
+
+// [G4-PRESENT] Bulk Present scratch buffers. Profiled cause of the ~16 ms
+// single-shot Present (docs/reports/G4.md §1): at the repo's default -O0
+// build, `vector::assign(K, 0)` / `vector::resize(4M)` on the 1.3 MB host
+// frame and 4 MB VRAM snapshot construct every byte through a per-element
+// call chain (~3.9 ms + ~11.5 ms). The bulk forms below move bit-identical
+// bytes through single memmove/memcpy calls. OOM behavior matches upstream
+// (new[] throws bad_alloc, same as vector growth).
+
+uint8_t *spikeHostFrameZeros()
+{
+    // Process-lifetime zeros (malloc + one bulk memset); never freed, same
+    // as the fork's lookup tables. Function-local static init is thread-safe.
+    // Deliberately MUTABLE: this libc++ takes its bulk memmove path only for
+    // non-const source ranges (const ranges copy element-wise at -O0; measured
+    // 0.08 ms vs 4.2 ms for 1.3 MB -- see docs/reports/G4.md §2). Callers must
+    // only ever read from it.
+    static uint8_t *zeros = []() {
+        const size_t n = static_cast<size_t>(kHostFrameWidth) * kHostFrameHeight * 4u;
+        uint8_t *p = new uint8_t[n];
+        std::memset(p, 0, n);
+        return p;
+    }();
+    return zeros;
+}
+
+inline void spikeAssignHostZeros(std::vector<uint8_t> &out)
+{
+    const size_t n = static_cast<size_t>(kHostFrameWidth) * kHostFrameHeight * 4u;
+    uint8_t *z = spikeHostFrameZeros();
+    out.assign(z, z + n); // range copy: memmove-fast, identical bytes
+}
+
+struct SpikeVramSnap
+{
+    uint8_t *data = nullptr;
+    uint32_t size = 0;
+    SpikeVramSnap() = default;
+    ~SpikeVramSnap() { delete[] data; }
+    SpikeVramSnap(const SpikeVramSnap &) = delete;
+    SpikeVramSnap &operator=(const SpikeVramSnap &) = delete;
+};
+
+} // namespace
+
 bool GSSpikeBackend::CopyFrameToHostRgba(const GSFrameReg &frame,
                                        uint32_t width,
                                        uint32_t height,
@@ -1816,7 +1863,7 @@ bool GSSpikeBackend::CopyFrameToHostRgba(const GSFrameReg &frame,
     if (!m_vram || m_vramSize == 0u)
         return false;
 
-    outPixels.assign(kHostFrameWidth * kHostFrameHeight * 4u, 0u);
+    spikeAssignHostZeros(outPixels); // [G4-PRESENT] was assign(K, 0)
     const uint32_t baseBytes = frameBaseIsPages ? frame.fbp * 8192u : frame.fbp * 256u;
     const uint32_t basePtr = frameBaseIsPages ? GSInternal::framePageBaseToBlock(frame.fbp) : frame.fbp;
     const uint32_t fbw = frame.fbw ? frame.fbw : kHostFrameWidth / 64u;
@@ -1885,13 +1932,26 @@ PresentationFrame GSSpikeBackend::Present(const GSPresentationRequest &request)
 {
     // Snapshot local memory under the backend lock, then perform the expensive
     // display conversion without holding the producer-side raster lock.
-    thread_local std::vector<uint8_t> snapshot;
-    SnapshotVram(snapshot);
-    if (snapshot.empty())
-        return {};
+    // [G4-PRESENT] Raw thread-local snapshot: SnapshotVram's resize(4M) pays
+    // ~11.5 ms of first-use element construction at -O0; malloc+memcpy moves
+    // identical bytes under the identical lock.
+    thread_local SpikeVramSnap snap;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_vram || m_vramSize == 0u)
+            return {};
+        if (snap.size != m_vramSize)
+        {
+            uint8_t *grown = new uint8_t[m_vramSize]; // throws like vector growth
+            delete[] snap.data;
+            snap.data = grown;
+            snap.size = m_vramSize;
+        }
+        std::memcpy(snap.data, m_vram, m_vramSize);
+    }
 
     thread_local GSSpikeBackend snapshotBackend;
-    snapshotBackend.Initialize(snapshot.data(), static_cast<uint32_t>(snapshot.size()));
+    snapshotBackend.Initialize(snap.data, snap.size);
     return snapshotBackend.PresentFromLocalMemory(request);
 }
 
@@ -1966,7 +2026,7 @@ PresentationFrame GSSpikeBackend::PresentFromLocalMemory(const GSPresentationReq
         {
             result.width = std::max(width1, width2);
             result.height = std::max(height1, height2);
-            result.pixels.assign(kHostFrameWidth * kHostFrameHeight * 4u, 0u);
+            spikeAssignHostZeros(result.pixels); // [G4-PRESENT] was assign(K, 0)
             const uint8_t bgR = static_cast<uint8_t>(request.bgcolor);
             const uint8_t bgG = static_cast<uint8_t>(request.bgcolor >> 8u);
             const uint8_t bgB = static_cast<uint8_t>(request.bgcolor >> 16u);
