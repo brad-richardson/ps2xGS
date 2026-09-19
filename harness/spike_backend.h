@@ -10,8 +10,8 @@
 //     CLUT footprint mid-batch (no capture does; identity tables
 //     are the proof).
 //   - RMW single address lookup (WritePixel, step 3): the frmw
-//     read+write pair shares one computed VRAM address (CT32/CT24
-//     fast path; other PSMs keep the two-call path).
+//     read+write pair shares one computed VRAM address (CT32 fast
+//     path; other PSMs keep the two-call path).
 
 #include "runtime/gs/gs_backend.h"
 
