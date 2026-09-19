@@ -5,7 +5,9 @@
 //
 // Usage:
 //   gsreplay <capture.gscap> --backend cpu [--repeat N] [--threshold 4]
-//       [--max-bad-pct 1.0] [--json out.json]
+//       [--max-bad-pct 1.0] [--json out.json] [--time-submits]
+// (--time-submits also prints the total Submit time for the replay;
+// median_ms times Present calls only.)
 
 #include "backend_factory.h"
 #include "gscap.h"
@@ -33,6 +35,7 @@ struct Options
     int threshold = 4;
     double maxBadPct = 1.0;
     std::string jsonPath;
+    bool timeSubmits = false;
 };
 
 Options parseArgs(int argc, char **argv)
@@ -62,6 +65,8 @@ Options parseArgs(int argc, char **argv)
             opts.maxBadPct = std::stod(needValue("--max-bad-pct"));
         else if (arg == "--json")
             opts.jsonPath = needValue("--json");
+        else if (arg == "--time-submits")
+            opts.timeSubmits = true;
         else
             throw std::runtime_error("unknown flag '" + arg + "'");
     }
@@ -137,6 +142,8 @@ int main(int argc, char **argv)
         std::vector<PresentRow> rows;
         int presentIndex = 0;
         int failures = 0;
+        int submitCount = 0;
+        double submitMsTotal = 0.0;
 
         for (size_t i = 0; i < reader.recordCount(); ++i)
         {
@@ -159,7 +166,19 @@ int main(int argc, char **argv)
             {
                 GSPrimitiveBatch batch{};
                 reader.getSubmit(i, batch);
-                backend->Submit(batch);
+                ++submitCount;
+                if (opts.timeSubmits)
+                {
+                    const auto t0 = std::chrono::steady_clock::now();
+                    backend->Submit(batch);
+                    const auto t1 = std::chrono::steady_clock::now();
+                    submitMsTotal +=
+                        std::chrono::duration<double, std::milli>(t1 - t0).count();
+                }
+                else
+                {
+                    backend->Submit(batch);
+                }
                 break;
             }
             case gscap::kBeginTransfer:
@@ -334,7 +353,11 @@ int main(int argc, char **argv)
                      << ",\"median_ms\":" << r.medianMs
                      << ",\"pass\":" << (r.pass ? "true" : "false") << "}";
             }
-            json << "],\"failures\":" << failures << "}";
+            json << "],\"failures\":" << failures;
+            if (opts.timeSubmits)
+                json << ",\"submits\":" << submitCount << ",\"submit_ms_total\":"
+                     << submitMsTotal;
+            json << "}";
             std::ofstream os(opts.jsonPath, std::ios::binary | std::ios::trunc);
             if (!os)
                 throw std::runtime_error("cannot open --json path");
@@ -342,6 +365,8 @@ int main(int argc, char **argv)
         }
 
         std::printf("gsreplay: %zu presents, %d failures\n", rows.size(), failures);
+        if (opts.timeSubmits)
+            std::printf("submits %d submit_ms_total=%.3f\n", submitCount, submitMsTotal);
         return failures == 0 ? 0 : 1;
     }
     catch (const std::exception &e)

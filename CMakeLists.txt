@@ -40,6 +40,7 @@ add_executable(gsreplay
     harness/gsreplay.cpp
     harness/backend_factory.cpp
     harness/strict_backend.cpp
+    harness/spike_backend.cpp
 )
 target_link_libraries(gsreplay PRIVATE ps2xgs_harness)
 
@@ -115,3 +116,9 @@ target_link_libraries(test_present_heuristic PRIVATE ps2xgs_harness)
 add_test(NAME present-heuristic
     COMMAND test_present_heuristic "${PS2XGS_SYNTH_DIR}")
 set_tests_properties(present-heuristic PROPERTIES FIXTURES_REQUIRED synth)
+
+# G3 steps 2-3: spike backend identity over every capture.
+add_test(NAME spike-identity
+    COMMAND sh "${CMAKE_SOURCE_DIR}/tests/replay_spike.sh"
+            "${PS2XGS_SYNTH_DIR}" "$<TARGET_FILE:gsreplay>")
+set_tests_properties(spike-identity PROPERTIES FIXTURES_REQUIRED synth)
