@@ -767,7 +767,9 @@ void caseTex1Filter(Gen &g, bool linear, bool mmin, bool mmag)
     s.textureWidth = 32;
     s.textureHeight = 32;
     s.linearFilter = linear;
-    drawUvSprite(g, s, 16, 16, 48, 48, 0, 0, 512, 512);
+    // 2x magnification (16 texels -> 32 pixels) so nearest-vs-
+    // linear differ; 1:1 would make them identical.
+    drawUvSprite(g, s, 16, 16, 48, 48, 0, 0, 256, 256);
     g.present();
 }
 
