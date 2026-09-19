@@ -343,6 +343,75 @@ struct DispfbReg
     }
 };
 
+// ---- MIPTBP1/2 ----
+// G2: mip level buffer addresses, ignored by the CPU backend,
+// honored by the strict backend. Layout matches the GS:
+// TBP1 bits0-13, TBW1 bits14-19, TBP2 bits20-33, TBW2 bits34-39,
+// TBP3 bits40-53, TBW3 bits54-59 (MIPTBP2 holds levels 4-6).
+struct Miptbp1Reg
+{
+    uint16_t tbp1 = 0;
+    uint8_t tbw1 = 0;
+    uint16_t tbp2 = 0;
+    uint8_t tbw2 = 0;
+    uint16_t tbp3 = 0;
+    uint8_t tbw3 = 0;
+
+    uint64_t encode() const
+    {
+        return uint64_t(tbp1 & 0x3FFFu) | (uint64_t(tbw1 & 0x3Fu) << 14) |
+               (uint64_t(tbp2 & 0x3FFFu) << 20) | (uint64_t(tbw2 & 0x3Fu) << 34) |
+               (uint64_t(tbp3 & 0x3FFFu) << 40) | (uint64_t(tbw3 & 0x3Fu) << 54);
+    }
+    static Miptbp1Reg decode(uint64_t v)
+    {
+        Miptbp1Reg r;
+        r.tbp1 = v & 0x3FFFu;
+        r.tbw1 = (v >> 14) & 0x3Fu;
+        r.tbp2 = (v >> 20) & 0x3FFFu;
+        r.tbw2 = (v >> 34) & 0x3Fu;
+        r.tbp3 = (v >> 40) & 0x3FFFu;
+        r.tbw3 = (v >> 54) & 0x3Fu;
+        return r;
+    }
+    bool operator==(const Miptbp1Reg &o) const
+    {
+        return encode() == o.encode();
+    }
+};
+
+struct Miptbp2Reg
+{
+    uint16_t tbp4 = 0;
+    uint8_t tbw4 = 0;
+    uint16_t tbp5 = 0;
+    uint8_t tbw5 = 0;
+    uint16_t tbp6 = 0;
+    uint8_t tbw6 = 0;
+
+    uint64_t encode() const
+    {
+        return uint64_t(tbp4 & 0x3FFFu) | (uint64_t(tbw4 & 0x3Fu) << 14) |
+               (uint64_t(tbp5 & 0x3FFFu) << 20) | (uint64_t(tbw5 & 0x3Fu) << 34) |
+               (uint64_t(tbp6 & 0x3FFFu) << 40) | (uint64_t(tbw6 & 0x3Fu) << 54);
+    }
+    static Miptbp2Reg decode(uint64_t v)
+    {
+        Miptbp2Reg r;
+        r.tbp4 = v & 0x3FFFu;
+        r.tbw4 = (v >> 14) & 0x3Fu;
+        r.tbp5 = (v >> 20) & 0x3FFFu;
+        r.tbw5 = (v >> 34) & 0x3Fu;
+        r.tbp6 = (v >> 40) & 0x3FFFu;
+        r.tbw6 = (v >> 54) & 0x3Fu;
+        return r;
+    }
+    bool operator==(const Miptbp2Reg &o) const
+    {
+        return encode() == o.encode();
+    }
+};
+
 // ---- DISPLAY ----
 // DW bits32-43, DH bits44-54, MAGH bits23-26. Decoded width is
 // (DW+1)/(MAGH+1), height DH+1.

@@ -32,6 +32,10 @@ constexpr uint32_t kFrameFbw = 10; // 640 px rows
 constexpr uint32_t kZbp = 64;
 constexpr uint32_t kTexTbp = 128;
 constexpr uint32_t kClutCbp = 256;
+// G2 mip levels: same 32x32 CT32 size, distinct solid colors,
+// spaced to avoid swizzle overlap (tbw=1).
+constexpr uint32_t kMipTbp1 = 136;
+constexpr uint32_t kMipTbp2 = 144;
 
 GSContext baseContext(uint8_t framePsm = GS_PSM_CT32)
 {
@@ -675,6 +679,201 @@ void caseTexTexa(Gen &g)
     g.present();
 }
 
+// ---- G2: TEX1 filtering + mip chains ----
+
+std::vector<uint8_t> patternSolidCT32(int w, int h, uint8_t r, uint8_t g, uint8_t b,
+                                      uint8_t a)
+{
+    std::vector<uint8_t> px(static_cast<size_t>(w) * h * 4);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+        {
+            size_t o = (static_cast<size_t>(y) * w + x) * 4;
+            px[o] = r;
+            px[o + 1] = g;
+            px[o + 2] = b;
+            px[o + 3] = a;
+        }
+    return px;
+}
+
+void uploadMipChain(Gen &g)
+{
+    // L0 red, L1 green, L2 blue: wrong-LOD selection shows as
+    // full-sprite color diffs. CPU samples L0; strict picks L1/L2.
+    g.upload(kTexTbp, 1, GS_PSM_CT32, 0, 0, 32, 32,
+             patternSolidCT32(32, 32, 255, 0, 0, 0x80));
+    g.upload(kMipTbp1, 1, GS_PSM_CT32, 0, 0, 32, 32,
+             patternSolidCT32(32, 32, 0, 255, 0, 0x80));
+    g.upload(kMipTbp2, 1, GS_PSM_CT32, 0, 0, 32, 32,
+             patternSolidCT32(32, 32, 0, 0, 255, 0x80));
+}
+
+GSDrawState mipSpriteState(bool mmin, bool mmag, uint8_t mxl, bool linear, bool fst)
+{
+    GSDrawState s = baseState(GS_PRIM_SPRITE);
+    s.prim.tme = true;
+    s.prim.fst = fst;
+    s.context.tex0.tbp0 = kTexTbp;
+    s.context.tex0.tbw = 1;
+    s.context.tex0.psm = GS_PSM_CT32;
+    s.context.tex0.tw = 5;
+    s.context.tex0.th = 5;
+    s.context.tex0.tcc = 1;
+    gsregs::ClampReg clamp;
+    s.context.clamp = clamp.encode();
+    gsregs::Tex1Reg tex1;
+    tex1.mmin = mmin;
+    tex1.mmag = mmag;
+    tex1.mxl = mxl;
+    s.context.tex1 = tex1.encode();
+    gsregs::Miptbp1Reg miptbp1;
+    miptbp1.tbp1 = kMipTbp1;
+    miptbp1.tbw1 = 1;
+    miptbp1.tbp2 = kMipTbp2;
+    miptbp1.tbw2 = 1;
+    s.context.miptbp1 = miptbp1.encode();
+    s.context.miptbp2 = 0;
+    s.textureWidth = 32;
+    s.textureHeight = 32;
+    s.linearFilter = linear;
+    return s;
+}
+
+void caseTex1Filter(Gen &g, bool linear, bool mmin, bool mmag)
+{
+    // Gradient pattern so nearest-vs-linear differ; TEX1 set
+    // explicitly. Agree cases stay exact under strict; disagree
+    // cases flip (strict honors TEX1, ignores linearFilter).
+    g.upload(kTexTbp, 1, GS_PSM_CT32, 0, 0, 32, 32, patternCT32(32, 32));
+    GSDrawState s = baseState(GS_PRIM_SPRITE);
+    s.prim.tme = true;
+    s.prim.fst = true;
+    s.context.tex0.tbp0 = kTexTbp;
+    s.context.tex0.tbw = 1;
+    s.context.tex0.psm = GS_PSM_CT32;
+    s.context.tex0.tw = 5;
+    s.context.tex0.th = 5;
+    s.context.tex0.tcc = 1;
+    gsregs::ClampReg clamp;
+    s.context.clamp = clamp.encode();
+    gsregs::Tex1Reg tex1;
+    tex1.mmin = mmin;
+    tex1.mmag = mmag;
+    tex1.mxl = 0;
+    s.context.tex1 = tex1.encode();
+    s.context.miptbp1 = 0;
+    s.context.miptbp2 = 0;
+    s.textureWidth = 32;
+    s.textureHeight = 32;
+    s.linearFilter = linear;
+    drawUvSprite(g, s, 16, 16, 48, 48, 0, 0, 512, 512);
+    g.present();
+}
+
+void caseMip(Gen &g, uint8_t mxl)
+{
+    uploadMipChain(g);
+    // Filtering agrees (nearest) so only mip selection flips.
+    GSDrawState s = mipSpriteState(false, false, mxl, false, true);
+    drawUvSprite(g, s, 16, 16, 48, 48, 0, 0, 512, 512);
+    g.present();
+}
+
+void caseMipStq(Gen &g, uint8_t mxl)
+{
+    uploadMipChain(g);
+    GSDrawState s = mipSpriteState(false, false, mxl, false, false);
+    s.prim.type = GS_PRIM_TRIANGLE;
+    GSPrimitiveBatch b{};
+    b.vertexCount = 3;
+    b.state = s;
+    b.vertices[0] = vtx(8, 56, 0x100, 255, 255, 255, 0x80);
+    b.vertices[1] = vtx(56, 56, 0x100, 255, 255, 255, 0x80);
+    b.vertices[2] = vtx(32, 8, 0x100, 255, 255, 255, 0x80);
+    b.vertices[0].s = 0.0f;
+    b.vertices[0].t = 0.0f;
+    b.vertices[1].s = 1.0f;
+    b.vertices[1].t = 0.0f;
+    b.vertices[2].s = 0.5f;
+    b.vertices[2].t = 1.0f;
+    g.submit(b);
+    g.present();
+}
+
+// ---- G2: ignored-field isolation pairs ----
+
+gsregs::DimxReg g2DimxMatrix()
+{
+    gsregs::DimxReg dimx;
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 4; ++x)
+            dimx.m[y][x] = static_cast<uint8_t>((x + y * 4) & 7u);
+    return dimx;
+}
+
+void caseIsoDthe(Gen &g, uint64_t dthe)
+{
+    // DIMX held constant; only DTHE differs (single field).
+    GSDrawState s = baseState(GS_PRIM_SPRITE);
+    s.dimx = g2DimxMatrix().encode();
+    s.dthe = dthe;
+    g.submit(spriteBatch(8, 8, 56, 56, 0x100, 200, 150, 50, 0x80, s));
+    g.present();
+}
+
+void caseIsoColclamp(Gen &g, uint64_t colclamp)
+{
+    // Overflowing blend: (Cs*255>>7)+Cd exceeds 255 on all
+    // channels, so clamp-vs-wrap shows. Only COLCLAMP differs.
+    GSDrawState bg = baseState(GS_PRIM_SPRITE);
+    g.submit(spriteBatch(0, 0, kFW, kFH, 0x100, 40, 80, 160, 0x80, bg));
+    GSDrawState fg = baseState(GS_PRIM_SPRITE);
+    fg.prim.abe = true;
+    gsregs::AlphaReg alpha;
+    alpha.a = 0; // Cs
+    alpha.b = 2; // zero
+    alpha.c = 2; // FIX
+    alpha.d = 1; // Cd
+    alpha.fix = 0xFF;
+    fg.context.alpha = alpha.encode();
+    fg.colclamp = colclamp;
+    g.submit(spriteBatch(16, 16, 48, 48, 0x100, 200, 120, 60, 0x80, fg));
+    g.present();
+}
+
+void caseIsoScanmsk(Gen &g, uint64_t scanmsk)
+{
+    GSDrawState s = baseState(GS_PRIM_SPRITE);
+    s.scanmsk = scanmsk;
+    g.submit(spriteBatch(8, 8, 56, 56, 0x100, 30, 160, 200, 0x80, s));
+    g.present();
+}
+
+void caseIsoAa1(Gen &g, bool aa1)
+{
+    GSDrawState s = baseState(GS_PRIM_SPRITE);
+    s.prim.aa1 = aa1;
+    g.submit(spriteBatch(8, 8, 56, 56, 0x100, 30, 160, 200, 0x80, s));
+    g.present();
+}
+
+void caseIsoZte(Gen &g, bool zte, uint8_t ztst, bool preClear, uint32_t clearRgba)
+{
+    if (preClear)
+    {
+        GSContext ctx = baseContext();
+        g.be.ClearFramebuffer(ctx, clearRgba);
+    }
+    GSDrawState s = baseState(GS_PRIM_SPRITE);
+    gsregs::TestReg test;
+    test.zte = zte;
+    test.ztst = ztst;
+    s.context.test = test.encode();
+    ztestSetup(g, s);
+    g.present();
+}
+
 // ---- blend cases ----
 
 void blendPair(Gen &g, gsregs::AlphaReg alpha, bool pabe = false, bool fba = false,
@@ -1126,6 +1325,33 @@ CaseList allCases()
         casePresent(g, gsregs::Smode2Reg(), pmode, 0, true);
     });
     add("present-both", casePresentBoth);
+
+    // G2 step 1: TEX1 filtering + mip chains.
+    add("tex1-filter-agree-nearest", [](Gen &g) { caseTex1Filter(g, false, false, false); });
+    add("tex1-filter-agree-linear", [](Gen &g) { caseTex1Filter(g, true, true, true); });
+    add("tex1-filter-disagree-lin", [](Gen &g) { caseTex1Filter(g, false, true, true); });
+    add("tex1-filter-disagree-near", [](Gen &g) { caseTex1Filter(g, true, false, false); });
+    add("tex1-filter-mixed-mmin", [](Gen &g) { caseTex1Filter(g, false, true, false); });
+    add("mip-chain-mxl0", [](Gen &g) { caseMip(g, 0); });
+    add("mip-chain-mxl1", [](Gen &g) { caseMip(g, 1); });
+    add("mip-chain-mxl2", [](Gen &g) { caseMip(g, 2); });
+    add("mip-chain-stq-mxl2", [](Gen &g) { caseMipStq(g, 2); });
+
+    // G2 step 2: ignored-field isolation pairs.
+    add("iso-dthe-off", [](Gen &g) { caseIsoDthe(g, 0); });
+    add("iso-dthe-on", [](Gen &g) { caseIsoDthe(g, 1); });
+    add("iso-colclamp-on", [](Gen &g) { caseIsoColclamp(g, 1); });
+    add("iso-colclamp-off", [](Gen &g) { caseIsoColclamp(g, 0); });
+    add("iso-scanmsk-zero", [](Gen &g) { caseIsoScanmsk(g, 0); });
+    add("iso-scanmsk-set", [](Gen &g) { caseIsoScanmsk(g, 2); });
+    add("iso-aa1-clear", [](Gen &g) { caseIsoAa1(g, false); });
+    add("iso-aa1-set", [](Gen &g) { caseIsoAa1(g, true); });
+    add("iso-zte-on-always",
+        [](Gen &g) { caseIsoZte(g, true, gsregs::kZtstAlways, false, 0); });
+    add("iso-zte-off-always",
+        [](Gen &g) { caseIsoZte(g, false, gsregs::kZtstAlways, false, 0); });
+    add("iso-zte-off-never",
+        [](Gen &g) { caseIsoZte(g, false, gsregs::kZtstNever, true, 0xFF202020u); });
 
     return cases;
 }
