@@ -1052,6 +1052,62 @@ void casePresent(Gen &g, gsregs::Smode2Reg smode2, gsregs::PmodeReg pmode, uint6
     ++g.presents;
 }
 
+// G3 step 1: Present fbp==0 fallback probes (G0 §9 item 4). Display
+// always reads fbp 0 (64x64 CT32, progressive, en1); candidate
+// frames live at fbp 8 (red) and fbp 32 (green). Page-disjoint from
+// fbp 0 and each other within the 64x64 window (fbw 10: fbp 0
+// touches pages {0,10}, fbp 8 touches {8,18}, fbp 32 touches
+// {32,42}), so fills never alias the display read.
+constexpr uint32_t kPresentCandB = 32;
+constexpr uint32_t kPresentCtxEmpty = 0xFFFFFFFFu;
+
+void casePresentFbp0(Gen &g, bool fillDisplay, bool fillCandA, bool fillCandB,
+                     uint32_t ctxA, uint32_t ctxB)
+{
+    if (fillDisplay)
+    {
+        GSContext ctx = baseContext();
+        g.be.ClearFramebuffer(ctx, 0xFFFF0000u); // blue at fbp 0
+    }
+    if (fillCandA)
+    {
+        GSContext ctx = baseContext();
+        ctx.frame.fbp = kFrame2Fbp;
+        g.be.ClearFramebuffer(ctx, 0xFF0000FFu); // red at fbp 8
+    }
+    if (fillCandB)
+    {
+        GSContext ctx = baseContext();
+        ctx.frame.fbp = kPresentCandB;
+        g.be.ClearFramebuffer(ctx, 0xFF00FF00u); // green at fbp 32
+    }
+    gsregs::DispfbReg dispfb;
+    dispfb.fbp = kFrameFbp;
+    dispfb.fbw = kFrameFbw;
+    gsregs::DisplayReg display;
+    display.dw = kFW - 1;
+    display.dh = kFH - 1;
+    GSPresentationRequest req{};
+    req.pmode = gsregs::PmodeReg().encode();
+    req.smode2 = gsregs::Smode2Reg().encode();
+    req.dispfb1 = dispfb.encode();
+    req.display1 = display.encode();
+    auto setCtx = [](GSFrameReg &dst, uint32_t fbp) {
+        if (fbp == kPresentCtxEmpty)
+        {
+            dst = GSFrameReg{};
+            return;
+        }
+        dst.fbp = fbp;
+        dst.fbw = kFrameFbw;
+        dst.psm = GS_PSM_CT32;
+    };
+    setCtx(req.contextFrames[0], ctxA);
+    setCtx(req.contextFrames[1], ctxB);
+    g.be.Present(req);
+    ++g.presents;
+}
+
 // ---- registry ----
 
 using CaseFn = std::function<void(Gen &)>;
@@ -1354,6 +1410,18 @@ CaseList allCases()
         [](Gen &g) { caseIsoZte(g, false, gsregs::kZtstAlways, false, 0); });
     add("iso-zte-off-never",
         [](Gen &g) { caseIsoZte(g, false, gsregs::kZtstNever, true, 0xFF202020u); });
+
+    // G3 step 1: Present fbp==0 fallback probes.
+    add("present-fbp0-black",
+        [](Gen &g) { casePresentFbp0(g, false, true, false, kFrame2Fbp, kPresentCtxEmpty); });
+    add("present-fbp0-nonblack",
+        [](Gen &g) { casePresentFbp0(g, true, true, false, kFrame2Fbp, kPresentCtxEmpty); });
+    add("present-fbp0-multi",
+        [](Gen &g) { casePresentFbp0(g, false, true, true, kFrame2Fbp, kPresentCandB); });
+    add("present-fbp0-empty",
+        [](Gen &g) {
+            casePresentFbp0(g, false, false, false, kPresentCtxEmpty, kPresentCtxEmpty);
+        });
 
     return cases;
 }

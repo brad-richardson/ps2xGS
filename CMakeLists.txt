@@ -108,3 +108,10 @@ add_test(NAME cpu-identity-on-new-captures
     COMMAND sh "${CMAKE_SOURCE_DIR}/tests/check_cpu_new.sh"
             "${PS2XGS_SYNTH_DIR}" "$<TARGET_FILE:gsreplay>")
 set_tests_properties(cpu-identity-on-new-captures PROPERTIES FIXTURES_REQUIRED synth)
+
+# G3 step 1: Present fbp==0 fallback heuristic pins.
+add_executable(test_present_heuristic tests/test_present_heuristic.cpp)
+target_link_libraries(test_present_heuristic PRIVATE ps2xgs_harness)
+add_test(NAME present-heuristic
+    COMMAND test_present_heuristic "${PS2XGS_SYNTH_DIR}")
+set_tests_properties(present-heuristic PROPERTIES FIXTURES_REQUIRED synth)

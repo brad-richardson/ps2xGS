@@ -20,8 +20,8 @@ def has(m, *keys):
     return all(k in d.get(m, {}) for k in keys)
 
 
-check(d.get("files") == 98, "files==98")
-check(d.get("presents") == 98, "presents==98")
+check(d.get("files") == 102, "files==102")
+check(d.get("presents") == 102, "presents==102")
 check(d.get("submits") == 138, "submits==138")
 
 check(has("prim_type", "point", "line", "trilist", "tristrip", "trifan", "sprite"),
