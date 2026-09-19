@@ -33,6 +33,47 @@ target_include_directories(ps2xgs_harness PUBLIC
 )
 target_link_libraries(ps2xgs_harness PUBLIC ps2xgs_upstream_cpu)
 
+# G5: proof target. The three upstream-patches/*.patch files are applied
+# at build time to a scratch copy of the pinned sources (the submodule
+# stays untouched; a failed hunk fails the build). The staged
+# gs_cpu_backend.cpp is compiled as GSPatchedCpuBackend (class rename via
+# -D) so it links beside the pristine `cpu` backend without ODR collision;
+# ps2_gs_memory.cpp is NOT recompiled (symbols come from
+# ps2xgs_upstream_cpu). Include dirs are PRIVATE so no pristine TU can see
+# the patched header.
+find_program(G5_PATCH_EXECUTABLE patch REQUIRED)
+set(G5_STAGE_DIR "${CMAKE_BINARY_DIR}/g5-patched")
+set(G5_PATCHED_SRC "${G5_STAGE_DIR}/src/gs_cpu_backend.cpp")
+set(G5_PATCHED_HEADER "${G5_STAGE_DIR}/include/runtime/gs/gs_cpu_backend.h")
+add_custom_command(
+    OUTPUT "${G5_PATCHED_SRC}" "${G5_PATCHED_HEADER}"
+    COMMAND "${CMAKE_COMMAND}"
+        "-DWORK=${CMAKE_BINARY_DIR}/g5-scratch"
+        "-DSRC_DIR=${CMAKE_SOURCE_DIR}"
+        "-DPATCH_EXE=${G5_PATCH_EXECUTABLE}"
+        "-DSTAGE_DIR=${G5_STAGE_DIR}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/apply_g5_patches.cmake"
+    DEPENDS
+        "${CMAKE_SOURCE_DIR}/upstream/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp"
+        "${CMAKE_SOURCE_DIR}/upstream/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h"
+        "${CMAKE_SOURCE_DIR}/upstream-patches/clut-cache.patch"
+        "${CMAKE_SOURCE_DIR}/upstream-patches/rmw-lookup.patch"
+        "${CMAKE_SOURCE_DIR}/upstream-patches/present-scratch.patch"
+        "${CMAKE_SOURCE_DIR}/cmake/apply_g5_patches.cmake"
+    COMMENT "G5: applying upstream patches to scratch copy"
+    VERBATIM
+)
+add_library(ps2xgs_patched_cpu STATIC
+    "${G5_PATCHED_SRC}"
+    harness/patched_cpu_factory.cpp
+)
+target_include_directories(ps2xgs_patched_cpu PRIVATE
+    "${G5_STAGE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/upstream/ps2xRuntime/include"
+    "${CMAKE_SOURCE_DIR}/harness"
+)
+target_compile_definitions(ps2xgs_patched_cpu PRIVATE GSCpuBackend=GSPatchedCpuBackend)
+
 # G0 step 4: replay + diff. The backend choice lives in
 # harness/backend_factory.cpp so S1 adds "vulkan" there without
 # touching the replay logic.
@@ -42,7 +83,7 @@ add_executable(gsreplay
     harness/strict_backend.cpp
     harness/spike_backend.cpp
 )
-target_link_libraries(gsreplay PRIVATE ps2xgs_harness)
+target_link_libraries(gsreplay PRIVATE ps2xgs_harness ps2xgs_patched_cpu)
 
 # G0 step 5: synthetic capture generator.
 add_executable(gsgen harness/gsgen.cpp)
@@ -122,3 +163,9 @@ add_test(NAME spike-identity
     COMMAND sh "${CMAKE_SOURCE_DIR}/tests/replay_spike.sh"
             "${PS2XGS_SYNTH_DIR}" "$<TARGET_FILE:gsreplay>")
 set_tests_properties(spike-identity PROPERTIES FIXTURES_REQUIRED synth)
+
+# G5: patched-cpu (build-time patched upstream) identity over every capture.
+add_test(NAME patched-identity
+    COMMAND sh "${CMAKE_SOURCE_DIR}/tests/replay_patched.sh"
+            "${PS2XGS_SYNTH_DIR}" "$<TARGET_FILE:gsreplay>")
+set_tests_properties(patched-identity PROPERTIES FIXTURES_REQUIRED synth)
