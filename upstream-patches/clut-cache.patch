@@ -1,0 +1,113 @@
+Upstream patch: CLUT-cache ([G3-CLUT], ported by G5).
+Per-Submit memo of resolved palette entries; invalidated on
+Submit/TextureFlush/Reset. Self-contained; apply with `patch -p1`
+from the repo root against the pinned upstream revision.
+--- a/upstream/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
++++ b/upstream/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
+@@ -3,6 +3,7 @@
+ #include "runtime/gs/gs_backend.h"
+ 
+ #include <array>
++#include <cstdint>
+ #include <functional>
+ #include <mutex>
+ #include <vector>
+@@ -72,4 +73,10 @@
+     GSTransferSnapshot m_transferState{};
+     std::vector<uint8_t> m_localToHostBuffer;
+     size_t m_localToHostReadPos = 0;
++
++    // [G3-CLUT] Per-Submit memo keyed by raw texel index.
++    void invalidateClutCache();
++    std::array<uint32_t, 256> m_clutCache{};
++    std::array<uint32_t, 256> m_clutTag{};
++    uint32_t m_clutGen = 0; // 0 = invalid; bumped per Submit/TextureFlush/Reset
+ };
+--- a/upstream/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
++++ b/upstream/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+@@ -551,10 +551,21 @@
+ {
+     std::lock_guard<std::mutex> lock(m_mutex);
+     ResetUnlocked();
++}
++
++void GSCpuBackend::invalidateClutCache()
++{
++    // [G3-CLUT] Generation bump; tags clear on 32-bit wrap.
++    if (++m_clutGen == 0)
++    {
++        m_clutTag.fill(0);
++        m_clutGen = 1;
++    }
+ }
+ 
+ void GSCpuBackend::ResetUnlocked()
+ {
++    invalidateClutCache(); // [G3-CLUT]
+     m_transfer = {};
+     m_transfer.direction = 3u;
+     m_transferState = {};
+@@ -568,6 +579,7 @@
+     std::lock_guard<std::mutex> lock(m_mutex);
+     if (!m_vram || batch.vertexCount == 0u)
+         return;
++    invalidateClutCache(); // [G3-CLUT] per-Submit memo scope
+     DrawPrimitive(batch);
+ }
+ 
+@@ -580,6 +592,8 @@
+ {
+     // CPU texture reads are coherent with local memory. Future cached/GPU
+     // backends use this boundary to invalidate texture views.
++    std::lock_guard<std::mutex> lock(m_mutex);
++    invalidateClutCache(); // [G3-CLUT] documented invalidation boundary
+ }
+ 
+ void GSCpuBackend::Sync(GSSyncReason)
+@@ -947,26 +961,41 @@
+                                   uint8_t csa,
+                                   uint8_t sourcePsm)
+ {
++    // [G3-CLUT] Per-Submit memo: every parameter but the texel index
++    // is fixed within a Submit (single batch state), so the resolved
++    // entry is a pure function of the index until the next
++    // Submit/TextureFlush/Reset. Exact unless a draw writes its own
++    // CLUT footprint mid-batch.
++    if (m_clutTag[index] == m_clutGen)
++        return m_clutCache[index];
++
+     const uint32_t clutIndex = resolveClutIndex(index, cpsm, csm, csa, sourcePsm);
+     const uint32_t clutWidth = (state.texclut.cbw != 0u) ? static_cast<uint32_t>(state.texclut.cbw) : 1u;
+     const uint32_t clutX = static_cast<uint32_t>(state.texclut.cou) + (clutIndex & 0x0Fu);
+     const uint32_t clutY = static_cast<uint32_t>(state.texclut.cov) + (clutIndex >> 4);
+ 
++    uint32_t resolved = 0xFFFF00FFu;
+     switch (cpsm)
+     {
+     case GS_PSM_CT32:
+-        return applyTexa(state.texa, cpsm, GSMem::ReadCT32(m_vram, cbp, clutWidth, clutX, clutY));
++        resolved = applyTexa(state.texa, cpsm, GSMem::ReadCT32(m_vram, cbp, clutWidth, clutX, clutY));
++        break;
+     case GS_PSM_CT24:
+-        return applyTexa(state.texa, cpsm, GSMem::ReadCT24(m_vram, cbp, clutWidth, clutX, clutY));
++        resolved = applyTexa(state.texa, cpsm, GSMem::ReadCT24(m_vram, cbp, clutWidth, clutX, clutY));
++        break;
+     case GS_PSM_CT16:
+-        return applyTexa(state.texa, cpsm, Rgba5551ToRgba8888(GSMem::ReadCT16(m_vram, cbp, clutWidth, clutX, clutY)));
++        resolved = applyTexa(state.texa, cpsm, Rgba5551ToRgba8888(GSMem::ReadCT16(m_vram, cbp, clutWidth, clutX, clutY)));
++        break;
+     case GS_PSM_CT16S:
+-        return applyTexa(state.texa, cpsm, Rgba5551ToRgba8888(GSMem::ReadCT16S(m_vram, cbp, clutWidth, clutX, clutY)));
++        resolved = applyTexa(state.texa, cpsm, Rgba5551ToRgba8888(GSMem::ReadCT16S(m_vram, cbp, clutWidth, clutX, clutY)));
++        break;
+     default:
+         break;
+     }
+ 
+-    return 0xFFFF00FFu;
++    m_clutCache[index] = resolved; // [G3-CLUT]
++    m_clutTag[index] = m_clutGen;  // [G3-CLUT]
++    return resolved;
+ }
+ 
+ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t, float q, uint16_t u, uint16_t v)

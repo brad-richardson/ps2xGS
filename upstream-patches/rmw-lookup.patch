@@ -1,0 +1,138 @@
+Upstream patch: RMW single-address lookup ([G3-RMW], ported by G5).
+CT32 frame writes share one computed VRAM address between the
+frmw read and the conditional store. Self-contained; apply with
+`patch -p1` from the repo root against the pinned upstream revision.
+--- a/upstream/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
++++ b/upstream/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+@@ -467,6 +467,11 @@
+         return count;
+     }
+ }
++
++namespace
++{
++void ensureC32RmwPage(); // [G3-RMW] defined above WritePixel
++} // namespace
+ 
+ GSCpuBackend::GSCpuBackend()
+ {
+@@ -474,6 +479,7 @@
+     static std::once_flag lookupTablesOnce;
+     std::call_once(lookupTablesOnce, []()
+                    { InitLookupTables(); });
++    ensureC32RmwPage(); // [G3-RMW] local C32 page table, once
+     for (size_t i = 0; i < kPsmHandlerCount; ++i)
+     {
+         switch (i)
+@@ -771,8 +777,78 @@
+     default:
+         break;
+     }
++}
++
++namespace
++{
++
++// [G3-RMW] Single-address read-modify-write for CT32 frame writes.
++// Upstream computes the swizzled VRAM address twice per frmw pixel
++// (ReadVramUnlocked for the blend/fbmsk/alpha read, WriteVramUnlocked
++// for the store). This path computes it once via a local copy of
++// the C32 page table (same literals + same
++// PixelStorageTraits::Address math as upstream ps2_gs_memory.cpp)
++// and reuses the byte pointer for the conditional store. All other
++// PSMs keep the original two-call path.
++using C32RmwTraits = GSMem::PixelStorageTraits<GSMem::C32>;
++C32RmwTraits::PageLookupTableT g_c32RmwPage{};
++std::once_flag g_c32RmwPageOnce;
++
++void ensureC32RmwPage()
++{
++    // Called once from the constructor (never per-pixel: call_once
++    // costs a lock on every invocation even after initialization).
++    std::call_once(g_c32RmwPageOnce, []() {
++        static constexpr C32RmwTraits::BlockLookupTableT kBlock{{
++            {0, 1, 4, 5, 16, 17, 20, 21},
++            {2, 3, 6, 7, 18, 19, 22, 23},
++            {8, 9, 12, 13, 24, 25, 28, 29},
++            {10, 11, 14, 15, 26, 27, 30, 31},
++        }};
++        static constexpr C32RmwTraits::ColumnLookupTableT kColumn{{
++            {0, 1, 4, 5, 8, 9, 12, 13},
++            {2, 3, 6, 7, 10, 11, 14, 15},
++            {16, 17, 20, 21, 24, 25, 28, 29},
++            {18, 19, 22, 23, 26, 27, 30, 31},
++            {32, 33, 36, 37, 40, 41, 44, 45},
++            {34, 35, 38, 39, 42, 43, 46, 47},
++            {48, 49, 52, 53, 56, 57, 60, 61},
++            {50, 51, 54, 55, 58, 59, 62, 63},
++        }};
++        C32RmwTraits::InitPageLookupTable(g_c32RmwPage, kBlock, kColumn);
++    });
+ }
+ 
++struct Rmw32Slot
++{
++    uint8_t *ptr = nullptr;
++};
++
++bool rmwBegin32(uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint8_t *vram,
++                Rmw32Slot &slot, uint32_t &oldValue)
++{
++    if (vram == nullptr)
++        return false;
++    // Table is initialized in the constructor; no per-pixel gate here.
++    // Same address + byte math as PixelStorageTraits<C32>::Read.
++    const uint32_t pixelAddr = C32RmwTraits::Address(g_c32RmwPage, base, bw, x, y);
++    const uint32_t bits = pixelAddr * 32u;
++    const uint32_t byteAddr = (bits / 8u) & (uint32_t)(GSMem::MEMORY_SIZE - sizeof(uint32_t));
++    slot.ptr = &vram[byteAddr];
++    uint32_t v = 0;
++    std::memcpy(&v, slot.ptr, sizeof(v));
++    oldValue = v;
++    return true;
++}
++
++void rmwCommit32(const Rmw32Slot &slot, uint32_t newValue)
++{
++    // Same store as PixelStorageTraits<C32>::Write (plain u32 memcpy).
++    std::memcpy(slot.ptr, &newValue, sizeof(newValue));
++}
++
++} // namespace
++
+ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog)
+ {
+     const auto &ctx = state.context;
+@@ -815,9 +891,19 @@
+ 
+     u32 rawFramebufferPixel = 0;
+     u32 fbrgba = 0;
++    Rmw32Slot rmwSlot{}; // [G3-RMW]
++    bool rmwActive = false; // [G3-RMW]
+     if (frmw)
+     {
+-        rawFramebufferPixel = ReadVramUnlocked(fpsm, fbp, fbw, x, y);
++        // [G3-RMW] CT32 shares one address lookup between the read
++        // and the conditional store below; other PSMs keep the
++        // original two-call path.
++        if (fpsm == GS_PSM_CT32 &&
++            rmwBegin32(fbp, fbw, (uint32_t)x, (uint32_t)y, m_vram, rmwSlot,
++                       rawFramebufferPixel))
++            rmwActive = true;
++        else
++            rawFramebufferPixel = ReadVramUnlocked(fpsm, fbp, fbw, x, y);
+         fbrgba = rawFramebufferPixel;
+ 
+         if (bitsPerPixel(fpsm) == 16)
+@@ -930,7 +1016,10 @@
+             pixel = Rgba8888ToRgba5551(pixel);
+         }
+ 
+-        WriteVramUnlocked(fpsm, fbp, fbw, x, y, pixel);
++        if (rmwActive) // [G3-RMW] store through the shared lookup
++            rmwCommit32(rmwSlot, pixel);
++        else
++            WriteVramUnlocked(fpsm, fbp, fbw, x, y, pixel);
+     }
+ 
+     if (writeMask.writeDepth && !ctx.zbuf.zmask)
