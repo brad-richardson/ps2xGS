@@ -1,5 +1,9 @@
 # ps2xGS
 
+> **Dormant (2026-09-24).** This harness is no longer developed. GS capture/replay now lives in the
+> PS2Recomp fork (`brad-richardson/PS2Recomp`, branch `ssx3`: `gs_replay_core`), and the GPU backend
+> is paraLLEl-GS (`brad-richardson/parallel-gs`, branch `ssx3`). Kept for its history (G1–G22).
+
 A GPU Graphics Synthesizer backend for
 [PS2Recomp](https://github.com/ran-j/PS2Recomp) (`upstream/`, pinned at
 `14b1e5cb`), plus the deterministic harness that an autonomous loop
